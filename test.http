@@ -1,0 +1,45 @@
+### Task 1: Check API Health
+# Ensure the server is running and healthy
+GET http://localhost:8000/health
+Accept: application/json
+
+###
+
+### Task 2: Analyze Sample Audio (Male)
+# Test the inference service with a male audio sample
+POST http://localhost:8000/analyze
+Content-Type: multipart/form-data; boundary=boundary123
+
+--boundary123
+Content-Disposition: form-data; name="audio"; filename="sample_male.wav"
+Content-Type: audio/wav
+
+< ./tests/sample_audio/sample_male.wav
+--boundary123--
+
+###
+
+### Task 3: Analyze Sample Audio (Female)
+# Test the inference service with a female audio sample
+POST http://localhost:8000/analyze
+Content-Type: multipart/form-data; boundary=boundary123
+
+--boundary123
+Content-Disposition: form-data; name="audio"; filename="sample_female.wav"
+Content-Type: audio/wav
+
+< ./tests/sample_audio/sample_female.wav
+--boundary123--
+
+###
+
+### Task 4: Analyze without providing an audio file (Error Case)
+# Test that the API returns a 422 Validation Error when no file is provided
+POST http://localhost:8000/analyze
+Content-Type: multipart/form-data; boundary=boundary123
+
+--boundary123
+Content-Disposition: form-data; name="contact_id"
+
+123e4567-e89b-12d3-a456-426614174000
+--boundary123--

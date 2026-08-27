@@ -27,6 +27,9 @@ uploads/
 *.wav
 *.mp3
 *.flac
+# But allow generated sample files for smoke-testing
+!tests/sample_audio/*.wav
+!tests/sample_audio/*.mp3
 
 # Benchmarks
 benchmarks_output/
