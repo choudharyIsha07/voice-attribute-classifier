@@ -101,17 +101,8 @@ class MLInferenceProvider(InferenceProvider):
         # Device selection: use GPU if available, else CPU
         self.device = 0 if torch.cuda.is_available() else -1
         
-        # Gender Model: We use a lightweight audio classification model if possible, 
-        # but due to time constraints, we'll use a robust wav2vec2 model fine-tuned for gender.
-        try:
-            self.gender_classifier = pipeline(
-                "audio-classification", 
-                model="alefiury/wav2vec2-large-xlsr-53-gender-recognition-librispeech",
-                device=self.device
-            )
-        except Exception as e:
-            logger.error(f"Failed to load gender model: {e}")
-            self.gender_classifier = None
+        # Gender Model: Replaced large 1.26GB wav2vec2 model with a pitch-based heuristic to save bandwidth.
+        self.gender_classifier = None
             
         # Language Model: Whisper Tiny is very robust and small.
         try:
@@ -127,34 +118,31 @@ class MLInferenceProvider(InferenceProvider):
         logger.info("Models loaded successfully.")
 
     def _estimate_gender_ml(self, samples: np.ndarray, sr: int) -> tuple[str, float]:
-        if self.gender_classifier is None:
-            return "unknown", 0.0
-            
+        # Using a pitch-based heuristic to avoid downloading 1.26GB models
         duration = len(samples) / sr
         if duration < 0.5:
             return "unknown", 0.0
             
         try:
-            with torch.inference_mode():
-                # Model expects 16kHz
-                results = self.gender_classifier(samples)
+            # Estimate pitch using YIN
+            f0 = librosa.yin(samples, fmin=50, fmax=300, sr=sr)
+            f0 = f0[~np.isnan(f0)]
+            if len(f0) == 0:
+                return "unknown", 0.0
                 
-            # results is a list of dicts: [{'label': 'male', 'score': 0.99}, ...]
-            best_pred = max(results, key=lambda x: x['score'])
-            label = best_pred['label'].lower()
-            score = float(best_pred['score'])
+            median_pitch = float(np.median(f0))
             
-            # Map labels in case they are different (e.g. M/F)
-            if label in ['m', 'male']:
-                final_label = 'male'
-            elif label in ['f', 'female']:
-                final_label = 'female'
+            # Simple thresholding based on typical fundamental frequencies
+            if median_pitch < 160:
+                # Male typically < 160 Hz
+                conf = min(0.95, max(0.5, 1.0 - (median_pitch - 50) / 110))
+                return "male", round(conf, 4)
             else:
-                final_label = 'unknown'
-                
-            return final_label, round(score, 4)
+                # Female typically > 160 Hz
+                conf = min(0.95, max(0.5, (median_pitch - 160) / 140))
+                return "female", round(conf, 4)
         except Exception as e:
-            logger.warning(f"Gender ML failed: {e}")
+            logger.warning(f"Gender heuristic failed: {e}")
             return "unknown", 0.0
             
     def _detect_language_ml(self, samples: np.ndarray, sr: int) -> str:
