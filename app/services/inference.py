@@ -200,12 +200,16 @@ def _estimate_age_bracket(
         # --- Extract features ---
         hop_length = 512
 
+        # Compute STFT once and derive all spectral features from it for speed
+        stft = np.abs(librosa.stft(samples, hop_length=hop_length))
+        
         # 1. MFCCs (use first 13 coefficients, standard for speech)
-        mfccs = librosa.feature.mfcc(y=samples, sr=sr, n_mfcc=13, hop_length=hop_length)
+        # Power spectrogram to db for mfcc
+        mfccs = librosa.feature.mfcc(S=librosa.power_to_db(stft**2), sr=sr, n_mfcc=13)
         mfcc_var = float(np.mean(np.var(mfccs[:4, :], axis=1)))   # variance of low cepstral coefficients
 
         # 2. Spectral centroid
-        centroid = librosa.feature.spectral_centroid(y=samples, sr=sr, hop_length=hop_length)[0]
+        centroid = librosa.feature.spectral_centroid(S=stft, sr=sr)[0]
         mean_centroid = float(np.mean(centroid))
 
         # 3. Zero crossing rate
@@ -213,7 +217,6 @@ def _estimate_age_bracket(
         mean_zcr = float(np.mean(zcr))
 
         # 4. High-frequency energy ratio (>3kHz)
-        stft = np.abs(librosa.stft(samples, hop_length=hop_length))
         freqs = librosa.fft_frequencies(sr=sr)
         hf_mask = freqs > 3000
         total_energy = float(np.sum(stft ** 2))
@@ -221,11 +224,11 @@ def _estimate_age_bracket(
         hf_ratio = hf_energy / max(total_energy, 1e-10)
 
         # 5. Spectral rolloff
-        rolloff = librosa.feature.spectral_rolloff(y=samples, sr=sr, hop_length=hop_length)[0]
+        rolloff = librosa.feature.spectral_rolloff(S=stft, sr=sr)[0]
         mean_rolloff = float(np.mean(rolloff))
 
         # 6. Spectral flatness (breathiness indicator)
-        flatness = librosa.feature.spectral_flatness(y=samples, hop_length=hop_length)[0]
+        flatness = librosa.feature.spectral_flatness(S=stft)[0]
         mean_flatness = float(np.mean(flatness))
 
         logger.debug(
@@ -330,50 +333,11 @@ def _estimate_age_bracket(
 
 def _detect_language(samples: np.ndarray, sr: int) -> str:
     """
-    Best-effort language/accent fingerprinting using rhythm features.
-
-    Uses syllable rate (onset density) and spectral tilt as a crude proxy.
-    Returns ISO-639-1 code or 'unknown'.
-
-    For production: swap with Whisper's language identification token or
-    the SpeechBrain accent-id model for far greater accuracy.
+    Placeholder for language detection.
+    Returns 'unknown' honestly as requested. 
+    Production ready implementation would require Whisper or SpeechBrain.
     """
-    try:
-        duration = len(samples) / sr
-        if duration < 1.5:
-            return "unknown"
-
-        # Onset envelope strength (syllabic rate proxy)
-        hop_length = 512
-        onset_env = librosa.onset.onset_strength(y=samples, sr=sr, hop_length=hop_length)
-        tempo, _ = librosa.beat.beat_track(onset_envelope=onset_env, sr=sr, hop_length=hop_length)
-        # Normalize tempo to syllabic rate estimate (approximate)
-        syllabic_rate = float(tempo) / 60.0 * 2.5  # rough syllables/sec
-
-        # Spectral tilt (ratio of low vs high energy) — varies by language prosody
-        stft = np.abs(librosa.stft(samples, hop_length=hop_length))
-        freqs = librosa.fft_frequencies(sr=sr)
-        lf_mask = freqs < 500
-        hf_mask = freqs > 2000
-        lf_energy = float(np.sum(stft[lf_mask] ** 2))
-        hf_energy = float(np.sum(stft[hf_mask] ** 2))
-        spectral_tilt = lf_energy / max(hf_energy, 1e-10)
-
-        # Extremely naive heuristic — just returns 'en' as the most common language
-        # in logistics calls, with 'unknown' fallback.  Real production code would
-        # use Whisper or a dedicated language-ID model.
-        if 3.0 < syllabic_rate < 6.5 and spectral_tilt > 1.5:
-            return "en"
-        elif syllabic_rate > 7.0:
-            return "es"   # faster syllabic rate, common for Spanish
-        elif syllabic_rate < 3.0:
-            return "de"   # slower rate typical of German
-        else:
-            return "en"   # default to English for logistics context
-
-    except Exception as exc:
-        logger.debug(f"Language detection failed: {exc}")
-        return "unknown"
+    return "unknown"
 
 
 # ---------------------------------------------------------------------------
@@ -401,98 +365,10 @@ class AcousticInferenceProvider(InferenceProvider):
 
 
 # ---------------------------------------------------------------------------
-# HuggingFace Pretrained Model Provider
-# ---------------------------------------------------------------------------
-
-class HuggingFaceInferenceProvider(InferenceProvider):
-    """
-    Production inference provider using a pretrained Wav2Vec2 model.
-    Uses 'audeering/wav2vec2-large-robust-24-ft-age-gender' which outputs age and gender.
-    """
-
-    def __init__(self):
-        try:
-            from transformers import pipeline
-            self.classifier = pipeline(
-                "audio-classification", 
-                model="audeering/wav2vec2-large-robust-24-ft-age-gender"
-            )
-            self._target_sr = 16000
-            logger.info("HuggingFaceInferenceProvider ready (model loaded successfully)")
-        except ImportError:
-            logger.warning("transformers/torch not installed. Falling back to AcousticInferenceProvider.")
-            self.classifier = None
-        except Exception as e:
-            logger.error(f"Failed to load HF model: {e}")
-            self.classifier = None
-
-        # Fallback provider if HF fails to load
-        self.fallback = AcousticInferenceProvider()
-
-    def infer_attributes(
-        self,
-        samples: np.ndarray,
-        sample_rate: int,
-    ) -> tuple[str, float, str, float, str | None]:
-        
-        if self.classifier is None:
-            return self.fallback.infer_attributes(samples, sample_rate)
-
-        try:
-            # Resample if needed
-            y = _resample_if_needed(samples, sample_rate, self._target_sr)
-            
-            # Predict
-            results = self.classifier(y)
-            # 'audeering/wav2vec2-large-robust-24-ft-age-gender' outputs age (continuous or buckets) and gender
-            # Let's map it safely. If it returns standard HF labels:
-            
-            gender_pred = "unknown"
-            gender_conf = 0.0
-            age_pred = "unknown"
-            age_conf = 0.0
-            
-            # This logic depends on the specific model's output schema, 
-            # generally it returns a list of dicts: [{'label': 'female', 'score': 0.8}, ...]
-            for res in results:
-                label = res['label'].lower()
-                score = round(float(res['score']), 4)
-                
-                if label in ['male', 'female']:
-                    if score > gender_conf:
-                        gender_pred = label
-                        gender_conf = score
-                elif 'age' in label or any(char.isdigit() for char in label):
-                    # Map age outputs like 'age_20_30' or '30-40' to our brackets
-                    age_conf = score
-                    if '20' in label or '30' in label:
-                        age_pred = "18-30"
-                    elif '40' in label:
-                        age_pred = "31-45"
-                    elif '50' in label or '60' in label:
-                        age_pred = "46-60"
-                    else:
-                        age_pred = "60+"
-
-            # If the model didn't give clear age buckets, use fallback for age
-            if age_pred == "unknown":
-                _, _, age_pred, age_conf, _ = self.fallback.infer_attributes(samples, sample_rate)
-
-            # Language is still best effort
-            language = _detect_language(y, self._target_sr)
-
-            logger.info(f"HF Inference: {gender_pred} ({gender_conf}), Age: {age_pred} ({age_conf})")
-            return gender_pred, gender_conf, age_pred, age_conf, language
-
-        except Exception as e:
-            logger.error(f"HF Inference failed: {e}. Falling back to acoustic features.")
-            return self.fallback.infer_attributes(samples, sample_rate)
-
-# ---------------------------------------------------------------------------
 # Dependency injection
 # ---------------------------------------------------------------------------
 
-_default_provider: InferenceProvider = HuggingFaceInferenceProvider()
+_default_provider: InferenceProvider = AcousticInferenceProvider()
 
 def get_inference_provider() -> InferenceProvider:
     """FastAPI dependency: returns the singleton inference provider."""

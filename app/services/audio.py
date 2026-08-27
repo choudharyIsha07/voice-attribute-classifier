@@ -7,7 +7,7 @@ from pydub.exceptions import CouldntDecodeError
 ALLOWED_MIME_TYPES = ["audio/wav", "audio/mpeg", "audio/flac", "audio/ogg", "audio/mp4", "video/mp4", "audio/x-m4a"]
 
 async def validate_audio_file(file: UploadFile, max_size: int) -> tuple[np.ndarray, int]:
-    if file.content_type not in ALLOWED_MIME_TYPES and not file.filename.endswith((".wav", ".mp3", ".flac", ".ogg", ".m4a")):
+    if file.content_type not in ALLOWED_MIME_TYPES and (not file.filename or not file.filename.endswith((".wav", ".mp3", ".flac", ".ogg", ".m4a"))):
         raise HTTPException(status_code=400, detail="Unsupported file type")
     
     content = await file.read()
@@ -23,10 +23,10 @@ async def validate_audio_file(file: UploadFile, max_size: int) -> tuple[np.ndarr
         elif fmt == "mpeg": fmt = "mp3"
         
         try:
-            audio = AudioSegment.from_file(io.BytesIO(content), format=fmt)
+            audio: AudioSegment = AudioSegment.from_file(io.BytesIO(content), format=fmt)
         except:
             # Fallback to auto-detect if explicitly passing format fails
-            audio = AudioSegment.from_file(io.BytesIO(content))
+            audio: AudioSegment = AudioSegment.from_file(io.BytesIO(content))
     except CouldntDecodeError:
         raise HTTPException(status_code=400, detail="Invalid audio format or unable to decode")
     except Exception as e:

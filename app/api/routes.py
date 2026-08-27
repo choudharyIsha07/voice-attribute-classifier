@@ -10,8 +10,13 @@ from ..services.quality import assess_audio_quality
 from ..services.inference import InferenceProvider, get_inference_provider
 from ..services.streaming import StreamingBuffer
 
+from slowapi import Limiter
+from slowapi.util import get_remote_address
+from fastapi import Request
+
 logger = logging.getLogger(__name__)
 router = APIRouter()
+limiter = Limiter(key_func=get_remote_address)
 
 
 # ---------------------------------------------------------------------------
@@ -22,6 +27,12 @@ router = APIRouter()
 async def health_check():
     """Returns 200 OK when the service is up."""
     return {"status": "ok"}
+
+@router.get("/ready", summary="Readiness check", tags=["ops"])
+async def ready_check(inference_provider: InferenceProvider = Depends(get_inference_provider)):
+    """Reports which provider is loaded and if the service is ready."""
+    provider_name = inference_provider.__class__.__name__
+    return {"status": "ready", "provider": provider_name}
 
 
 # ---------------------------------------------------------------------------
@@ -34,7 +45,9 @@ async def health_check():
     summary="Analyze audio for gender and age bracket",
     tags=["inference"],
 )
+@limiter.limit("10/minute")
 async def analyze_audio(
+    request: Request,
     audio: UploadFile = File(..., description="Audio file (wav/mp3/flac/ogg/m4a). Max 10 MB."),
     contact_id: Optional[str] = Form(None, description="Optional UUID. Auto-generated if omitted."),
     inference_provider: InferenceProvider = Depends(get_inference_provider),
@@ -57,7 +70,7 @@ async def analyze_audio(
         parsed_contact_id = uuid.uuid4()
     else:
         try:
-            parsed_contact_id = uuid.UUID(str(contact_id))
+            parsed_contact_id = uuid.UUID(contact_id)
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid contact_id: must be a valid UUID")
 
@@ -77,11 +90,22 @@ async def analyze_audio(
         raise HTTPException(status_code=500, detail="Internal server error")
 
     # 2. Assess audio quality
-    quality = assess_audio_quality(samples, sample_rate)
+    from typing import cast, Literal
+    quality = cast(Literal["degraded", "good", "insufficient"], assess_audio_quality(samples, sample_rate))
 
     # 3. Run inference
     gender_pred, gender_conf, age_pred, age_conf, language = \
         inference_provider.infer_attributes(samples, sample_rate)
+
+    # 4. Gate confidence on audio quality
+    if quality == "insufficient":
+        gender_pred = "unknown"
+        gender_conf = 0.0
+        age_pred = "unknown"
+        age_conf = 0.0
+    elif quality == "degraded":
+        gender_conf = min(gender_conf, 0.4)
+        age_conf = min(age_conf, 0.4)
 
     processing_ms = int((time.monotonic() - start_time) * 1000)
 
@@ -136,6 +160,7 @@ async def ws_analyze(
     await websocket.accept()
     ws_id = str(uuid.uuid4())[:8]
     logger.info(f"WebSocket connected: ws_id={ws_id}")
+    await websocket.send_json({"type": "connected", "ws_id": ws_id})
 
     buffer = StreamingBuffer(inference_provider)
 

@@ -55,6 +55,7 @@ class StreamingBuffer:
         self._sr = sample_rate
         self._samples: Deque[np.ndarray] = deque()
         self._total_samples = 0
+        self._last_inference_samples = 0
         self._chunk_index = 0
         self._window_samples = int(CHUNK_WINDOW_SEC * sample_rate)
 
@@ -80,7 +81,8 @@ class StreamingBuffer:
         self._samples.append(float_arr)
         self._total_samples += len(float_arr)
 
-        if self._total_samples >= self._window_samples:
+        if self._total_samples - self._last_inference_samples >= self._window_samples:
+            self._last_inference_samples = self._total_samples
             return self._run_inference(is_final=False)
         return None
 
@@ -97,14 +99,8 @@ class StreamingBuffer:
 
         self._chunk_index += 1
 
-        # Trim buffer: keep last 0.5s of overlap for continuity
-        overlap_samples = int(0.5 * self._sr)
-        if self._total_samples > overlap_samples:
-            # Discard old samples, keep overlap tail
-            keep = self._get_current_array()[-overlap_samples:]
-            self._samples.clear()
-            self._samples.append(keep)
-            self._total_samples = len(keep)
+        # No longer trimming the buffer! We keep all samples so progressive 
+        # and final results are evaluated over the entire call duration.
 
         return {
             "chunk_index": self._chunk_index,

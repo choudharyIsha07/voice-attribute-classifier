@@ -105,7 +105,7 @@ def _expected_calibration_error(confs: List[float], corrects: List[bool], n_bins
         bin_confs = [c for c, m in zip(confs, mask) if m]
         bin_accs  = [a for a, m in zip(corrects, mask) if m]
         ece += len(bin_confs) / n * abs(np.mean(bin_confs) - np.mean(bin_accs))
-    return float(ece)
+    return ece
 
 
 # ---------------------------------------------------------------------------
