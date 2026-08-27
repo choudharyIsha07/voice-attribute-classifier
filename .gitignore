@@ -1,0 +1,42 @@
+# Environments
+.env
+.env.*
+.venv/
+venv/
+
+# Python / Byte-compiled
+__pycache__/
+*.pyc
+
+# Testing / Typing / Linting
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Machine Learning / Models
+models/
+*.pt
+*.pth
+*.onnx
+*.bin
+
+# Data / Uploads / Temporary Audio
+tmp/
+temp/
+uploads/
+*.wav
+*.mp3
+*.flac
+
+# Benchmarks
+benchmarks_output/
+benchmark_results/
+
+# IDE / Editor
+.vscode/
+.idea/
+*.swp
+
+# OS Files
+.DS_Store
+Thumbs.db
