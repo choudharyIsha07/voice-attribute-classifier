@@ -130,52 +130,20 @@ See [Section 11](#11-websocket-streaming-api).
 
 ## 4. Inference Pipeline — Model Rationale
 
-### Gender: YIN Pitch Estimation
+### Gender: `wav2vec2-large-xlsr-53-gender-recognition-librispeech`
 
-**Why F0-based?**
-Fundamental frequency (F0) is the single most discriminative acoustic cue for speaker sex. Established psychoacoustic research (Titze 1989, Vipperla et al. 2010) shows:
-- Adult male speech: F0 ≈ 85–155 Hz (mean ~120 Hz)
-- Adult female speech: F0 ≈ 165–255 Hz (mean ~210 Hz)
+**Why ML over Heuristics?**
+The previous approach used `librosa.yin` for fundamental frequency estimation. While computationally fast initially, YIN is highly susceptible to "octave errors" on female voices, confidently tracking the subharmonic and outputting "male". 
 
-The boundary at **165 Hz** captures >95% of native-speaker sex differences.
+**Algorithm:** We replaced YIN with a state-of-the-art HuggingFace Transformers pipeline. The model `alefiury/wav2vec2-large-xlsr-53-gender-recognition-librispeech` utilizes self-supervised audio representations fine-tuned directly on LibriSpeech for gender recognition. 
 
-**Algorithm:** `librosa.yin()` implements the YIN algorithm (de Cheveigné & Kawahara 2002) — the state-of-the-art for monophonic F0 tracking. It's:
-- **No training required** — pure signal processing
-- **Sub-10ms** for a 5-second clip on CPU
-- **Robust to noise** — uses cumulative difference function with parabolic interpolation
-
-**Confidence:** Derived from voiced-frame ratio × distance-from-boundary. A 100 Hz signal gets ~0.85 confidence; a signal right at 165 Hz gets ~0.40.
-
-**Secondary feature:** Spectral centroid (mean frequency of energy) as a tiebreaker in the ambiguous zone — female speech carries more high-frequency energy.
+**Confidence:** Provided natively by the model's Softmax output layer.
 
 ---
 
-### Age Bracket: Acoustic Feature Rule Classifier
+### Age Bracket: Robust Acoustic Features
 
 **Features (all from librosa, backed by literature):**
-
-| Feature | Relationship to Age | Source |
-|---|---|---|
-| Spectral centroid | Decreases with age (vocal tract lengthening) | Harnsberger et al. 2010 |
-| MFCC variance (low dims) | Increases with age (jitter/tremor proxy) | Bocklet et al. 2008 |
-| High-frequency energy ratio (>3kHz) | Drops with age | Stathopoulos et al. 2011 |
-| Zero-crossing rate | Decreases with age (articulation speed) | Linville 2001 |
-| Spectral flatness | Higher (more breathiness) in older voices | — |
-
-**Decision logic:** Each feature votes for a bracket with a weighted score. Final bracket = argmax. Confidence = softmax probability × duration scale factor.
-
-**Why not a trained ML model?**
-- No labelled training data available in deployment
-- The InferenceProvider abstraction allows swapping in SpeechBrain/ECAPA-TDNN at any time
-- Rule-based approach is **explainable** and **debuggable** during a technical interview
-- Latency is <50ms on CPU (vs 200-400ms for PyTorch models)
-
-**Future upgrade path:** Replace `AcousticInferenceProvider` with `SpeechBrainProvider` that loads `Jzuluaga/wav2vec2-xls-r-300m-age-gender` from HuggingFace Hub.
-
----
-
-### Language: Rhythm Fingerprinting (Best-Effort Bonus)
-
 Uses syllabic rate (onset envelope peak density) and spectral tilt. This is deliberately simplified — for production, integrate Whisper's language identification token or `speechbrain/lang-id-commonlanguage_ecapa`.
 
 ---
